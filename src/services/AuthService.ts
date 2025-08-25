@@ -2,14 +2,20 @@
  * AuthService - Authentication Service Class
  * 
  * This service handles all authentication-related operations including login, signup,
- * logout, and user session management. It's designed to easily integrate with your backend API.
+ * logout, and user session management. It extends BaseApiService for consistent
+ * API communication and error handling.
  * 
- * Backend Integration Guide:
- * - Replace API_BASE_URL with your actual backend URL
- * - Update endpoints to match your backend routes
- * - Modify request/response structures as needed
- * - Add proper error handling for your specific API responses
+ * Backend Integration:
+ * - POST /auth/login - User authentication
+ * - POST /auth/signup - User registration
+ * - POST /auth/logout - User logout
+ * - GET /auth/profile - Get current user profile
+ * - POST /auth/refresh - Refresh authentication token
+ * - POST /auth/forgot-password - Password reset request
+ * - POST /auth/reset-password - Password reset confirmation
  */
+
+import { BaseApiService, ApiResponse } from './BaseApiService';
 
 export interface User {
   id: string;
@@ -41,13 +47,20 @@ export interface AuthResponse {
 
 /**
  * Authentication Service Class
- * Handles all user authentication operations
+ * Handles all user authentication operations with comprehensive backend integration
  */
-export class AuthService {
+export class AuthService extends BaseApiService {
   private static instance: AuthService;
-  private readonly API_BASE_URL = '/api/auth'; // TODO: Replace with your backend URL
   private readonly TOKEN_KEY = 'career_compass_token';
   private readonly USER_KEY = 'career_compass_user';
+  private readonly REFRESH_TOKEN_KEY = 'career_compass_refresh_token';
+
+  /**
+   * Constructor - Initialize with auth endpoint
+   */
+  constructor() {
+    super(); // Initialize BaseApiService
+  }
 
   /**
    * Singleton pattern implementation
@@ -63,32 +76,43 @@ export class AuthService {
   /**
    * User Login
    * 
-   * Backend Endpoint: POST /api/auth/login
+   * Backend Endpoint: POST /auth/login
    * Expected Request Body: { email: string, password: string }
-   * Expected Response: { success: boolean, user: User, token: string }
+   * Expected Response: { success: boolean, data: { user: User, token: string, refreshToken: string } }
    */
   public async login(credentials: LoginCredentials): Promise<AuthResponse> {
     try {
-      const response = await fetch(`${this.API_BASE_URL}/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(credentials),
-      });
+      const response = await this.post<{
+        user: User;
+        token: string;
+        refreshToken?: string;
+      }>('/auth/login', credentials, { requireAuth: false });
 
-      const data: AuthResponse = await response.json();
+      if (response.success && response.data) {
+        this.setAuthData(
+          response.data.user,
+          response.data.token,
+          response.data.refreshToken
+        );
 
-      if (data.success && data.user && data.token) {
-        this.setAuthData(data.user, data.token);
+        return {
+          success: true,
+          user: response.data.user,
+          token: response.data.token,
+          message: 'Login successful',
+        };
       }
 
-      return data;
+      return {
+        success: false,
+        message: response.message || 'Login failed',
+        errors: response.errors,
+      };
     } catch (error) {
       console.error('Login error:', error);
       return {
         success: false,
-        message: 'Network error. Please try again.',
+        message: error instanceof Error ? error.message : 'Network error. Please try again.',
       };
     }
   }
@@ -96,34 +120,45 @@ export class AuthService {
   /**
    * User Signup/Registration
    * 
-   * Backend Endpoint: POST /api/auth/signup
+   * Backend Endpoint: POST /auth/signup
    * Expected Request Body: { email: string, password: string, firstName: string, lastName: string }
-   * Expected Response: { success: boolean, user: User, token: string }
+   * Expected Response: { success: boolean, data: { user: User, token: string, refreshToken: string } }
    */
   public async signup(credentials: SignupCredentials): Promise<AuthResponse> {
     try {
       const { confirmPassword, ...signupData } = credentials;
       
-      const response = await fetch(`${this.API_BASE_URL}/signup`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(signupData),
-      });
+      const response = await this.post<{
+        user: User;
+        token: string;
+        refreshToken?: string;
+      }>('/auth/signup', signupData, { requireAuth: false });
 
-      const data: AuthResponse = await response.json();
+      if (response.success && response.data) {
+        this.setAuthData(
+          response.data.user,
+          response.data.token,
+          response.data.refreshToken
+        );
 
-      if (data.success && data.user && data.token) {
-        this.setAuthData(data.user, data.token);
+        return {
+          success: true,
+          user: response.data.user,
+          token: response.data.token,
+          message: 'Signup successful',
+        };
       }
 
-      return data;
+      return {
+        success: false,
+        message: response.message || 'Signup failed',
+        errors: response.errors,
+      };
     } catch (error) {
       console.error('Signup error:', error);
       return {
         success: false,
-        message: 'Network error. Please try again.',
+        message: error instanceof Error ? error.message : 'Network error. Please try again.',
       };
     }
   }
@@ -131,7 +166,7 @@ export class AuthService {
   /**
    * User Logout
    * 
-   * Backend Endpoint: POST /api/auth/logout
+   * Backend Endpoint: POST /auth/logout
    * Expected Headers: Authorization: Bearer {token}
    * Expected Response: { success: boolean }
    */
@@ -139,13 +174,7 @@ export class AuthService {
     try {
       const token = this.getToken();
       if (token) {
-        await fetch(`${this.API_BASE_URL}/logout`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-        });
+        await this.post('/auth/logout', {});
       }
     } catch (error) {
       console.error('Logout error:', error);
@@ -157,27 +186,19 @@ export class AuthService {
   /**
    * Get Current User Profile
    * 
-   * Backend Endpoint: GET /api/auth/profile
+   * Backend Endpoint: GET /auth/profile
    * Expected Headers: Authorization: Bearer {token}
-   * Expected Response: { success: boolean, user: User }
+   * Expected Response: { success: boolean, data: { user: User } }
    */
   public async getCurrentUser(): Promise<User | null> {
     try {
       const token = this.getToken();
       if (!token) return null;
 
-      const response = await fetch(`${this.API_BASE_URL}/profile`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      });
-
-      const data = await response.json();
+      const response = await this.get<{ user: User }>('/auth/profile');
       
-      if (data.success && data.user) {
-        return data.user;
+      if (response.success && response.data?.user) {
+        return response.data.user;
       }
       
       return null;
@@ -215,9 +236,13 @@ export class AuthService {
    * Set authentication data in localStorage
    * @private
    */
-  private setAuthData(user: User, token: string): void {
+  private setAuthData(user: User, token: string, refreshToken?: string): void {
     localStorage.setItem(this.TOKEN_KEY, token);
     localStorage.setItem(this.USER_KEY, JSON.stringify(user));
+    
+    if (refreshToken) {
+      localStorage.setItem(this.REFRESH_TOKEN_KEY, refreshToken);
+    }
   }
 
   /**
@@ -227,6 +252,98 @@ export class AuthService {
   private clearAuthData(): void {
     localStorage.removeItem(this.TOKEN_KEY);
     localStorage.removeItem(this.USER_KEY);
+    localStorage.removeItem(this.REFRESH_TOKEN_KEY);
+  }
+
+  /**
+   * Get stored refresh token
+   */
+  public getRefreshToken(): string | null {
+    return localStorage.getItem(this.REFRESH_TOKEN_KEY);
+  }
+
+  /**
+   * Refresh authentication token
+   * 
+   * Backend Endpoint: POST /auth/refresh
+   * Expected Request Body: { refreshToken: string }
+   * Expected Response: { success: boolean, data: { token: string, refreshToken?: string } }
+   */
+  public async refreshAuthToken(): Promise<{ success: boolean; token?: string }> {
+    try {
+      const refreshToken = this.getRefreshToken();
+      if (!refreshToken) {
+        return { success: false };
+      }
+
+      const response = await this.post<{
+        token: string;
+        refreshToken?: string;
+      }>('/auth/refresh', { refreshToken }, { requireAuth: false });
+
+      if (response.success && response.data) {
+        localStorage.setItem(this.TOKEN_KEY, response.data.token);
+        
+        if (response.data.refreshToken) {
+          localStorage.setItem(this.REFRESH_TOKEN_KEY, response.data.refreshToken);
+        }
+
+        return { success: true, token: response.data.token };
+      }
+
+      return { success: false };
+    } catch (error) {
+      console.error('Refresh token error:', error);
+      return { success: false };
+    }
+  }
+
+  /**
+   * Request password reset
+   * 
+   * Backend Endpoint: POST /auth/forgot-password
+   * Expected Request Body: { email: string }
+   * Expected Response: { success: boolean, message: string }
+   */
+  public async forgotPassword(email: string): Promise<AuthResponse> {
+    try {
+      const response = await this.post('/auth/forgot-password', { email }, { requireAuth: false });
+      
+      return {
+        success: response.success,
+        message: response.message || 'Password reset email sent',
+      };
+    } catch (error) {
+      console.error('Forgot password error:', error);
+      return {
+        success: false,
+        message: error instanceof Error ? error.message : 'Network error. Please try again.',
+      };
+    }
+  }
+
+  /**
+   * Reset password with token
+   * 
+   * Backend Endpoint: POST /auth/reset-password
+   * Expected Request Body: { token: string, password: string }
+   * Expected Response: { success: boolean, message: string }
+   */
+  public async resetPassword(token: string, password: string): Promise<AuthResponse> {
+    try {
+      const response = await this.post('/auth/reset-password', { token, password }, { requireAuth: false });
+      
+      return {
+        success: response.success,
+        message: response.message || 'Password reset successful',
+      };
+    } catch (error) {
+      console.error('Reset password error:', error);
+      return {
+        success: false,
+        message: error instanceof Error ? error.message : 'Network error. Please try again.',
+      };
+    }
   }
 
   /**
